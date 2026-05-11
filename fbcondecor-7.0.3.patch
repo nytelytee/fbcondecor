@@ -908,7 +908,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video
 +}
 diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev/core/fbcon.c
 --- oldlinux/drivers/video/fbdev/core/fbcon.c	2026-04-30 11:13:05.000000000 +0200
-+++ newlinux/drivers/video/fbdev/core/fbcon.c	2026-05-10 20:58:01.252689440 +0200
++++ newlinux/drivers/video/fbdev/core/fbcon.c	2026-05-11 06:58:36.208365432 +0200
 @@ -81,8 +81,10 @@
  #include <linux/uaccess.h>
  #include <linux/vga_switcheroo.h>
@@ -920,16 +920,18 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  #include "fbcon_rotate.h"
  #include "fb_internal.h"
  
-@@ -119,7 +121,7 @@
- static signed char con2fb_map[MAX_NR_CONSOLES];
- static signed char con2fb_map_boot[MAX_NR_CONSOLES];
+@@ -131,6 +133,10 @@
+ 	return fbcon_registered_fb[fb];
+ }
  
--static struct fb_info *fbcon_info_from_console(int console)
-+struct fb_info *fbcon_info_from_console(int console)
- {
- 	signed char fb;
- 	WARN_CONSOLE_UNLOCKED();
-@@ -155,6 +157,7 @@
++struct fb_info *fbcondecor_fbcon_info_from_console(int console) {
++	return fbcon_info_from_console(console);
++}
++
+ static int logo_lines;
+ /* logo_shown is an index to vc_cons when >= 0; otherwise follows FBCON_LOGO
+    enums.  */
+@@ -155,6 +161,7 @@
  }
  #endif /* CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY */
  
@@ -937,16 +939,31 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  #ifdef CONFIG_FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER
  static bool deferred_takeover = true;
  #else
-@@ -183,7 +186,7 @@
-  *  Interface used by the world
-  */
+@@ -254,6 +261,12 @@
  
--static void fbcon_clear_margins(struct vc_data *vc, int bottom_only);
-+void fbcon_clear_margins(struct vc_data *vc, int bottom_only);
- static void fbcon_set_palette(struct vc_data *vc, const unsigned char *table);
+ 	fbcon_set_all_vcs(info);
+ }
++
++int fbcondecor_fbcon_get_rotation(struct vc_data* vc)
++{
++	if (!vc) return 0;
++	return fb_display[vc->vc_num].con_rotate;
++}
+ #else
+ static inline void fbcon_set_rotation(struct fb_info *info)
+ {
+@@ -271,6 +284,10 @@
+ {
+ 	return;
+ }
++int fbcondecor_fbcon_get_rotation(struct vc_data* vc)
++{
++	return 0;
++}
+ #endif /* CONFIG_FRAMEBUFFER_CONSOLE_ROTATION */
  
- /*
-@@ -1022,11 +1025,17 @@
+ static void fbcon_set_bitops(struct fbcon_par *par)
+@@ -1022,11 +1039,17 @@
  		vc->vc_font.data = (void *)(p->fontdata = font->data);
  		vc->vc_font.charcount = font->charcount;
  	}
@@ -967,7 +984,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	vc_resize(vc, cols, rows);
  
  	pr_debug("mode:   %s\n", info->fix.id);
-@@ -1061,7 +1070,7 @@
+@@ -1061,7 +1084,7 @@
  		logo_shown = FBCON_LOGO_DONTSHOW;
  
  	if (vc != svc || logo_shown == FBCON_LOGO_DONTSHOW ||
@@ -976,7 +993,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		logo = 0;
  
  	if (var_to_display(p, &info->var, info))
-@@ -1130,8 +1139,13 @@
+@@ -1130,8 +1153,13 @@
  
  	cols = vc->vc_cols;
  	rows = vc->vc_rows;
@@ -992,7 +1009,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	new_cols /= vc->vc_font.width;
  	new_rows /= vc->vc_font.height;
  
-@@ -1340,19 +1354,21 @@
+@@ -1340,10 +1368,11 @@
  	struct fbcon_display *p = &fb_display[vc->vc_num];
  	struct fbcon_par *par = info->fbcon_par;
  
@@ -1006,9 +1023,8 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
 +	}
  }
  
--static void fbcon_clear_margins(struct vc_data *vc, int bottom_only)
-+void fbcon_clear_margins(struct vc_data *vc, int bottom_only)
- {
+ static void fbcon_clear_margins(struct vc_data *vc, int bottom_only)
+@@ -1351,8 +1380,13 @@
  	struct fb_info *info = fbcon_info_from_console(vc->vc_num);
  	struct fbcon_par *par = info->fbcon_par;
  
@@ -1016,10 +1032,14 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
 +	if (fbcon_is_active(vc, info)) {
  		par->bitops->clear_margins(vc, info, margin_color, bottom_only);
 +	}
++}
++
++void fbcondecor_fbcon_clear_margins(struct vc_data *vc, int bottom_only) {
++	fbcon_clear_margins(vc, bottom_only);
  }
  
  static void fbcon_cursor(struct vc_data *vc, bool enable)
-@@ -1440,8 +1456,13 @@
+@@ -1440,8 +1474,13 @@
  	if (!*vc->uni_pagedict_loc)
  		con_copy_unimap(vc, svc);
  
@@ -1035,7 +1055,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	cols /= vc->vc_font.width;
  	rows /= vc->vc_font.height;
  	ret = vc_resize(vc, cols, rows);
-@@ -1754,6 +1775,7 @@
+@@ -1754,6 +1793,7 @@
  		}
  		return;
  	}
@@ -1043,7 +1063,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	par->bitops->bmove(vc, info, real_y(p, sy), sx, real_y(p, dy), dx,
  			     height, width);
  }
-@@ -1803,6 +1825,8 @@
+@@ -1803,6 +1843,8 @@
  	case SM_UP:
  		if (count > vc->vc_rows)	/* Maximum realistic size */
  			count = vc->vc_rows;
@@ -1052,7 +1072,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		switch (fb_scrollmode(p)) {
  		case SCROLL_MOVE:
  			fbcon_redraw_blit(vc, info, p, t, b - t - count,
-@@ -1891,6 +1915,8 @@
+@@ -1891,6 +1933,8 @@
  	case SM_DOWN:
  		if (count > vc->vc_rows)	/* Maximum realistic size */
  			count = vc->vc_rows;
@@ -1061,7 +1081,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		switch (fb_scrollmode(p)) {
  		case SCROLL_MOVE:
  			fbcon_redraw_blit(vc, info, p, b - 1, b - t - count,
-@@ -2074,8 +2100,13 @@
+@@ -2074,8 +2118,13 @@
  	var.yres = virt_h * virt_fh;
  	x_diff = info->var.xres - var.xres;
  	y_diff = info->var.yres - var.yres;
@@ -1077,7 +1097,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		const struct fb_videomode *mode;
  
  		pr_debug("attempting resize %ix%i\n", var.xres, var.yres);
-@@ -2101,6 +2132,31 @@
+@@ -2101,6 +2150,31 @@
  	return 0;
  }
  
@@ -1109,7 +1129,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  static bool fbcon_switch(struct vc_data *vc)
  {
  	struct fb_info *info, *old_info = NULL;
-@@ -2111,6 +2167,9 @@
+@@ -2111,6 +2185,9 @@
  
  	info = fbcon_info_from_console(vc->vc_num);
  	par = info->fbcon_par;
@@ -1119,7 +1139,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  
  	if (logo_shown >= 0) {
  		struct vc_data *conp2 = vc_cons[logo_shown].d;
-@@ -2121,9 +2180,6 @@
+@@ -2121,9 +2198,6 @@
  		logo_shown = FBCON_LOGO_CANSHOW;
  	}
  
@@ -1129,7 +1149,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	/*
  	 * FIXME: If we have multiple fbdev's loaded, we need to
  	 * update all info->currcon.  Perhaps, we can place this
-@@ -2162,11 +2218,10 @@
+@@ -2162,11 +2236,10 @@
  					"unhandled fb_set_par error, "
  					"error code %d\n", ret);
  		}
@@ -1142,7 +1162,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	if (!fbcon_is_active(vc, info) || par->blank_state != FB_BLANK_UNBLANK)
  		fbcon_del_cursor_work(info);
  	else
-@@ -2210,6 +2265,44 @@
+@@ -2210,6 +2283,44 @@
  		par->var.xoffset = par->var.yoffset = p->yscroll = 0;
  		par->bitops->update_start(info);
  	}
@@ -1187,7 +1207,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  
  	fbcon_set_palette(vc, color_table);
  	fbcon_clear_margins(vc, 0);
-@@ -2268,8 +2361,9 @@
+@@ -2268,8 +2379,9 @@
  			fbcon_cursor(vc, !blank);
  			par->cursor_flash = (!blank);
  
@@ -1198,7 +1218,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		}
  
  		if (!blank)
-@@ -2438,15 +2532,23 @@
+@@ -2438,15 +2550,23 @@
  		set_vc_hi_font(vc, true);
  
  	if (resize) {
@@ -1225,7 +1245,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	} else if (con_is_visible(vc)
  		   && vc->vc_mode == KD_TEXT) {
  		fbcon_clear_margins(vc, 0);
-@@ -2685,7 +2787,17 @@
+@@ -2685,7 +2805,17 @@
  		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
  		cols /= vc->vc_font.width;
  		rows /= vc->vc_font.height;
@@ -1244,7 +1264,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		updatescrollmode(p, info, vc);
  		scrollback_max = 0;
  		scrollback_current = 0;
-@@ -2728,7 +2840,15 @@
+@@ -2728,7 +2858,15 @@
  		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
  		cols /= vc->vc_font.width;
  		rows /= vc->vc_font.height;
@@ -1261,7 +1281,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	}
  
  	if (fg != -1)
-@@ -3123,6 +3243,10 @@
+@@ -3123,6 +3261,10 @@
  			caps->len = vc->vc_font.charcount;
  		}
  	}
@@ -1272,7 +1292,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  }
  
  int fbcon_set_con2fb_map_ioctl(void __user *argp)
-@@ -3396,6 +3520,7 @@
+@@ -3396,6 +3538,7 @@
  		con2fb_map[i] = -1;
  
  	fbcon_start();
@@ -1409,8 +1429,8 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon_cw.c newlinux/drivers/video/fb
  	unsigned short charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
 diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/fbdev/core/fbcondecor.c
 --- oldlinux/drivers/video/fbdev/core/fbcondecor.c	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/drivers/video/fbdev/core/fbcondecor.c	2026-05-11 05:07:36.428990634 +0200
-@@ -0,0 +1,350 @@
++++ newlinux/drivers/video/fbdev/core/fbcondecor.c	2026-05-11 07:01:04.100189316 +0200
+@@ -0,0 +1,352 @@
 +/*
 + *  linux/drivers/video/fbdev/core/fbcondecor.c -- Framebuffer console
 + *                                                 decorations
@@ -1468,7 +1488,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +	const u8 __user *user_set_image /* in */
 +) {
 +
-+	struct fb_info *info = fbcon_info_from_console(vc->vc_num);
++	struct fb_info *info = fbcondecor_fbcon_info_from_console(vc->vc_num);
 +
 +	size_t image_size;
 +	if (check_mul_overflow(info->var.xres, info->var.yres, &image_size)) {
@@ -1512,7 +1532,9 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +	u8 *old_image = vc->vc_fbcondecor_image;
 +	u16 previous_state = old_geometry ? FBCONDECOR_STATE_FLAG_GEOMETRY : 0;
 +	previous_state |= old_image ? FBCONDECOR_STATE_FLAG_IMAGE : 0;
-+	previous_state |= info->fbcon_par->rotate << FBCONDECOR_ROTATION_SHIFT;
++	previous_state |= (
++		fbcondecor_fbcon_get_rotation(vc) << FBCONDECOR_ROTATION_SHIFT
++	);
 +
 +	struct fbcondecor_geometry *new_geometry = NULL;
 +	u8 *new_image = NULL;
@@ -1662,7 +1684,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +			vc->vc_size_row * vc->vc_top,
 +			vc->vc_size_row * (vc->vc_bottom - vc->vc_top) / 2
 +		);
-+		fbcon_clear_margins(vc, 0);
++		fbcondecor_fbcon_clear_margins(vc, 0);
 +	}
 +
 +	return previous_state;
@@ -1763,8 +1785,8 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +}
 diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.h newlinux/drivers/video/fbdev/core/fbcondecor.h
 --- oldlinux/drivers/video/fbdev/core/fbcondecor.h	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/drivers/video/fbdev/core/fbcondecor.h	2026-05-11 02:23:49.985199832 +0200
-@@ -0,0 +1,173 @@
++++ newlinux/drivers/video/fbdev/core/fbcondecor.h	2026-05-11 06:55:59.766849455 +0200
+@@ -0,0 +1,183 @@
 +/*
 + *  linux/drivers/video/fbdev/core/fbcondecor.h -- Framebuffer console
 + *                                                 decoration headers
@@ -1785,6 +1807,11 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.h newlinux/drivers/video/
 +#include <linux/console_struct.h>
 +
 +#ifdef CONFIG_FBCONDECOR
++
++/* fbcon.c */
++int fbcondecor_fbcon_get_rotation(struct vc_data *vc);
++void fbcondecor_fbcon_clear_margins(struct vc_data *vc, int bottom_only);
++struct fb_info * fbcondecor_fbcon_info_from_console(int console);
 +
 +/* bitblit.c */
 +void fbcondecor_unrotated_bit_cursor(
@@ -1871,6 +1898,11 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.h newlinux/drivers/video/
 +
 +#else /* CONFIG_FBCONDECOR */
 +
++/* fbcon.c */
++int fbcondecor_fbcon_get_rotation(struct vc_data *vc);
++void fbcondecor_fbcon_clear_margins(struct vc_data *vc, int bottom_only);
++struct fb_info * fbcondecor_fbcon_info_from_console(int console);
++
 +/* bitblit.c */
 +void fbcondecor_unrotated_bit_cursor(
 +	struct vc_data *vc, struct fb_info *info, bool enable, int fg, int bg
@@ -1938,19 +1970,6 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.h newlinux/drivers/video/
 +#endif /* CONFIG_FBCONDECOR */
 +
 +#endif /* __FBCONDECOR_H */
-diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.h newlinux/drivers/video/fbdev/core/fbcon.h
---- oldlinux/drivers/video/fbdev/core/fbcon.h	2026-04-30 11:13:05.000000000 +0200
-+++ newlinux/drivers/video/fbdev/core/fbcon.h	2026-05-08 14:47:02.892406893 +0200
-@@ -221,6 +221,9 @@
- 	return attribute;
- }
- 
-+void fbcon_clear_margins(struct vc_data *vc, int bottom_only);
-+struct fb_info *fbcon_info_from_console(int console);
-+
- #define FBCON_SWAP(i,r,v) ({ \
-         typeof(r) _r = (r);  \
-         typeof(v) _v = (v);  \
 diff -ruN oldlinux/drivers/video/fbdev/core/fbcon_ud.c newlinux/drivers/video/fbdev/core/fbcon_ud.c
 --- oldlinux/drivers/video/fbdev/core/fbcon_ud.c	2026-04-30 11:13:05.000000000 +0200
 +++ newlinux/drivers/video/fbdev/core/fbcon_ud.c	2026-05-11 00:39:28.668419781 +0200
