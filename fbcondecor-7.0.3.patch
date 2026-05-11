@@ -183,7 +183,7 @@ diff -ruN oldlinux/drivers/Makefile newlinux/drivers/Makefile
  
 diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbdev/core/bitblit.c
 --- oldlinux/drivers/video/fbdev/core/bitblit.c	2026-04-30 11:13:05.000000000 +0200
-+++ newlinux/drivers/video/fbdev/core/bitblit.c	2026-05-08 20:10:01.185295269 +0200
++++ newlinux/drivers/video/fbdev/core/bitblit.c	2026-05-11 01:01:06.603450669 +0200
 @@ -18,6 +18,7 @@
  #include <linux/console.h>
  #include <asm/types.h>
@@ -192,12 +192,21 @@ diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbd
  
  /*
   * Accelerated handlers.
-@@ -46,12 +47,30 @@
+@@ -46,12 +47,39 @@
  static void bit_bmove(struct vc_data *vc, struct fb_info *info, int sy,
  		      int sx, int dy, int dx, int height, int width)
  {
++	// NyteLyte:
 +	// Not sure why *this* doesn't break, but bit_clear does.
 +	// Using bit_bmove in case of no image seems to work fine.
++	// In the rotated versions of fbcon, I call fbcondecor_bmove_redraw
++	// regardless of whether there's a picture or not.
++	// This is not necessary to do. I was just too lazy to figure out
++	// the right place to add the offsets. I will probably revisit this
++	// to fix that, because it is sort of a performance issue.
++	// Fbcondecor does character rendering in a loop, meanwhile this
++	// just copies an area of the screen to a different location, so it is
++	// definitely faster and I should prefer to do this instead if I can.
 +	if (fbcondecor_active(info, vc) && vc->vc_fbcondecor_image) {
 +		if (height == 1 && dy == sy) {
 +			/* must use slower redraw bmove to keep background pic intact */
@@ -227,10 +236,13 @@ diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbd
  	area.height = height * vc->vc_font.height;
  	area.width = width * vc->vc_font.width;
  
-@@ -61,6 +80,17 @@
+@@ -60,7 +88,19 @@
+ 
  static void bit_clear(struct vc_data *vc, struct fb_info *info, int sy,
  		      int sx, int height, int width, int fg, int bg)
- {
+-{
++{	
++	// NyteLyte:
 +	// TODO: For some reason, when I attempt to optimize by using the standard bit_clear
 +	//       if there is no image (along with adding the vc's offsets to dx and dy in the
 +	//       region, the last line of the console freezes when we scroll; this makes no
@@ -245,7 +257,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbd
  	struct fb_fillrect region;
  
  	region.color = bg;
-@@ -150,7 +180,13 @@
+@@ -150,7 +190,13 @@
  static void bit_putcs(struct vc_data *vc, struct fb_info *info,
  		      const unsigned short *s, int count, int yy, int xx,
  		      int fg, int bg)
@@ -260,7 +272,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbd
  	struct fb_image image;
  	u32 width = DIV_ROUND_UP(vc->vc_font.width, 8);
  	u32 cellsize = width * vc->vc_font.height;
-@@ -229,6 +265,17 @@
+@@ -229,6 +275,17 @@
  static void bit_clear_margins(struct vc_data *vc, struct fb_info *info,
  			      int color, int bottom_only)
  {
@@ -278,7 +290,27 @@ diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbd
  	unsigned int cw = vc->vc_font.width;
  	unsigned int ch = vc->vc_font.height;
  	unsigned int rw = info->var.xres - (vc->vc_cols*cw);
-@@ -388,11 +435,15 @@
+@@ -257,6 +314,19 @@
+ 	}
+ }
+ 
++// NyteLyte:
++// Exposing this in the header instead of "bit_cursor" since that
++// may be a bit more common of a name. I am doing it like this because
++// even in the case of a rotated console, fbcondecor needs the original
++// bit_cursor to be called instead of the ones specialized for rotated
++// displays. It does its own coordinate transormations to account for the
++// rotations, since that was easier to implement.
++void fbcondecor_unrotated_bit_cursor(
++	struct vc_data *vc, struct fb_info *info, bool enable, int fg, int bg
++) {
++	bit_cursor(vc, info, enable, fg, bg);
++}
++
+ static void bit_cursor(struct vc_data *vc, struct fb_info *info, bool enable,
+ 		       int fg, int bg)
+ {
+@@ -388,11 +458,15 @@
  	cursor.image.depth = 1;
  	cursor.rop = ROP_XOR;
  
@@ -300,10 +332,11 @@ diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbd
  }
 diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video/fbdev/core/cfbcondecor.c
 --- oldlinux/drivers/video/fbdev/core/cfbcondecor.c	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/drivers/video/fbdev/core/cfbcondecor.c	2026-05-09 00:29:38.901362600 +0200
-@@ -0,0 +1,391 @@
++++ newlinux/drivers/video/fbdev/core/cfbcondecor.c	2026-05-11 02:24:39.105880164 +0200
+@@ -0,0 +1,550 @@
 +/*
-+ *  linux/drivers/video/fbdev/core/cfbcondecor.c -- Framebuffer decor render functions
++ *  linux/drivers/video/fbdev/core/cfbcondecor.c -- Framebuffer decor render
++ *                                                  functions
 + *
 + *  Copyright (C) 2004 Michal Januszewski <michalj+fbcondecor@gmail.com>
 + *  Copyright (C) 2026-2026 NyteLyte <nytelyte@tuta.io>
@@ -330,199 +363,286 @@ diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video
 +#include "fbcon.h"
 +#include "fbcondecor.h"
 +
-+static inline void fbcondecor_fill_image(
-+	u8 *destination, int destination_line_bytes,
-+	u8 *source, int source_line_bytes,
++struct screen_draw_info {
++	int start_position;
++	int next_pixel_offset;
++	int next_line_offset;
++};
++
++static inline struct screen_draw_info get_draw_info(
++	int rotation,
++	int resolution_x, int resolution_y,
++	int offset_x, int offset_y,
++	int bytes_per_pixel, int bytes_per_line
++) {
++	switch (rotation) {
++		case FB_ROTATE_CW:
++			// Top right corner is (0 lines, xres-1 pixels).
++			// x offset translates to a positive offset in lines.
++			// y offset translates to a negative offset in pixels.
++			return (struct screen_draw_info){
++				.start_position = (
++					0*bytes_per_line +
++					(resolution_x - 1)*bytes_per_pixel +
++					offset_x*bytes_per_line +
++					-offset_y*bytes_per_pixel
++				),
++				.next_pixel_offset = bytes_per_line,
++				.next_line_offset = -bytes_per_pixel
++
++			};
++		case FB_ROTATE_UD:
++			// Bottom right corner is (yres-1 lines, xres-1 pixels)
++			// x offset translates to a negative offset in pixels.
++			// y offset translates to a negative offset in lines.
++			return (struct screen_draw_info){
++				.start_position = (
++					(resolution_y - 1)*bytes_per_line +
++					(resolution_x - 1)*bytes_per_pixel +
++					-offset_x*bytes_per_pixel +
++					-offset_y*bytes_per_line
++				),
++				.next_pixel_offset = -bytes_per_pixel,
++				.next_line_offset = -bytes_per_line
++			};
++		case FB_ROTATE_CCW:
++			// Bottom left corner is (yres-1 lines, 0 pixels).
++			// x offset translates to a negative offset in lines.
++			// y offset translates to a positive offset in pixels.
++			return (struct screen_draw_info) {
++				.start_position = (
++					(resolution_y - 1)*bytes_per_line +
++					0*bytes_per_pixel +
++					-offset_x*bytes_per_line +
++					offset_y*bytes_per_pixel
++				),
++				.next_pixel_offset = -bytes_per_line,
++				.next_line_offset = bytes_per_pixel
++			};
++		case FB_ROTATE_UR:
++		default:
++			// Top left corner is (0 lines, 0 pixels).
++			// x offset translates to a positive offset in pixels.
++			// y offset translates to a positive offset in lines.
++			return (struct screen_draw_info) {
++				.start_position = (
++					0*bytes_per_line +
++					0*bytes_per_pixel +
++					offset_x*bytes_per_pixel +
++					offset_y*bytes_per_line
++				),
++				.next_pixel_offset = bytes_per_pixel,
++				.next_line_offset = bytes_per_line
++			};
++	}
++
++}
++
++// Fill destination from source
++// This does double duty to fill a region of the screen
++// both with a color and the background image, depending
++// on the source_info; to fill with an unchanging color,
++// you'd pass a zeroed struct for source_info, otherwise
++// you'd pass an image buffer and the info necessary tož
++// walk along it.
++static inline void fbcondecor_fill_block(
++	u8 *destination, struct screen_draw_info destination_info,
++	u8 *source, struct screen_draw_info source_info,
 +	int area_height, int area_width
 +) {
 +
++	destination += destination_info.start_position;
++	source += source_info.start_position;
++
 +	while (area_height-- > 0) {
-+		u32 *destination_line = (u32 *)destination;
-+		u32 *source_line = (u32 *)source;
++		u8 *destination_line = destination;
++		u8 *source_line = source;
 +
 +		for (int i = 0; i < area_width; i++) {
-+			fb_writel(*source_line++, destination_line++);
++			fb_writel(*(u32*)source_line, (u32*)destination_line);
++			source_line += source_info.next_pixel_offset;
++			destination_line += destination_info.next_pixel_offset;
 +		}
 +
-+		destination += destination_line_bytes;
-+		source += source_line_bytes;
++		source += source_info.next_line_offset;
++		destination += destination_info.next_line_offset;
 +	}
 +}
 +
-+static inline void fbcondecor_fill_color(
-+	u8 *destination, int destination_line_bytes,
-+	u32 color, int area_height, int area_width
++// Fill destination from source or a color, depending on
++// whether a mask (character) is high or low. This is used
++// to render a character, and does similar double duty with
++// regards to source_info like fbcondecor_fill_block
++static inline void fbcondecor_fill_character(
++	u8 *destination, struct screen_draw_info destination_info,
++	u8 *source, struct screen_draw_info source_info,
++	u8* character, int character_height, int character_width,
++	u32 foreground_color
 +) {
++	destination += destination_info.start_position;
++	source += source_info.start_position;
 +
-+	while (area_height-- > 0) {
-+		u32 *destination_line = (u32 *)destination;
++	u8 current_character_part;
++	while (character_height-- > 0) {
++		u8 *destination_line = destination;
++		u8 *source_line = source;
 +
-+		for (int i = 0; i < area_width; i++) {
-+			fb_writel(color, destination_line++);
++		for (int i = 0; i < character_width; i++) {
++			if ((i & 7) == 0)
++				current_character_part = *character++;
++			fb_writel(
++				(
++					(current_character_part & 0b10000000) ?
++					foreground_color :
++					*(u32 *) source_line
++				),
++				(u32*) destination_line
++			);
++			current_character_part <<= 1;
++			source_line += source_info.next_pixel_offset;
++			destination_line += destination_info.next_pixel_offset;
 +		}
 +
-+		destination += destination_line_bytes;
++		source += source_info.next_line_offset;
++		destination += destination_info.next_line_offset;
 +	}
++
 +}
 +
-+static void fbcondecor_fill(struct fb_info *info, struct vc_data *vc,
-+                            int offset_y, int offset_x,
-+                            int height, int width, int color_index)
-+{
++static void fbcondecor_fill(
++	struct fb_info *info, struct vc_data *vc,
++	int offset_y, int offset_x,
++	int height, int width, int color_index
++) {
 +	if (!fbcondecor_initialized_state) return;
-+	const int bytes_per_pixel = 4; // we only support 32bpp true color
-+	int destination_offset = offset_y*info->fix.line_length + offset_x*bytes_per_pixel;
-+	u8 *destination = (u8 *)(info->screen_base + destination_offset);
++	struct screen_draw_info destination_draw_info = get_draw_info(
++		info->fbcon_par->rotate,
++		info->var.xres, info->var.yres,
++		offset_x, offset_y,
++		4, info->fix.line_length
++	);
++
 +	int vc_background_color_index = (vc->vc_def_color >> 4) & 0xf;
-+	
++	u32 background_color = fbcondecor_get_color(info, color_index);
++	struct screen_draw_info source_draw_info = {0};
++	u8* source = (u8*) &background_color;
++
 +	if (
-+		info->fbcon_par->blank_state ||
-+		color_index != vc_background_color_index ||
-+		!vc->vc_fbcondecor_image
++		!info->fbcon_par->blank_state &&
++		color_index == vc_background_color_index &&
++		vc->vc_fbcondecor_image
 +	) {
-+		fbcondecor_fill_color(destination, info->fix.line_length,
-+		                      fbcondecor_get_color(info, color_index), height, width);
-+	} else {
-+		int source_offset = (offset_y*info->var.xres + offset_x)*bytes_per_pixel;
-+		u8* source = vc->vc_fbcondecor_image + source_offset;
-+		fbcondecor_fill_image(destination, info->fix.line_length,
-+		                      source, info->var.xres*bytes_per_pixel,
-+		                      height, width);
++		int image_line_length = FBCON_SWAP(
++			info->fbcon_par->rotate,
++			4*info->var.xres,
++			4*info->var.yres
++		);
++		source = vc->vc_fbcondecor_image;
++		// We always read the source as if it were upright.
++		// This is to make the background image orient itself
++		// the same way the console is oriented.
++		source_draw_info = get_draw_info(
++			FB_ROTATE_UR,
++			// These 2 don't matter for upright.
++			0, 0,
++			offset_x, offset_y,
++			4, image_line_length
++		);
 +	}
-+}
 +
-+static void fbcondecor_putc_atop_image(
-+	struct fb_info *info, struct vc_data *vc,
-+	int offset_y, int offset_x,
-+	int height, int width,
-+	u8 *character, u32 foreground_color
-+)
-+{
-+	const int bytes_per_pixel = 4;
-+	
-+	int destination_offset = offset_y*info->fix.line_length + offset_x*bytes_per_pixel;
-+	int source_offset = (offset_y*info->var.xres + offset_x)*bytes_per_pixel;
-+
-+	u8 *source = vc->vc_fbcondecor_image + source_offset;
-+	u8 *destination = info->screen_base + destination_offset;
-+	
-+	if (offset_y + height > info->var.yres) return;
-+	if (offset_x + width > info->var.xres) return;
-+
-+	u8 current_character_part;
-+	for (int y = 0; y < height; y++) {
-+		for (int x = 0; x < width; x++) {
-+			if ((x & 7) == 0) current_character_part = *character++;
-+			fb_writel(
-+				(current_character_part & 0b10000000) ? foreground_color : *(u32 *)source,
-+				destination
-+			);
-+			current_character_part <<= 1;
-+			destination += bytes_per_pixel;
-+			source += bytes_per_pixel;
-+		}
-+		destination += info->fix.line_length - width*bytes_per_pixel;
-+		source += (info->var.xres - width) * bytes_per_pixel;
-+
-+	}
-+}
-+
-+static void fbcondecor_putc_atop_color(
-+	struct fb_info *info, struct vc_data *vc,
-+	int offset_y, int offset_x,
-+	int height, int width,
-+	u8 *character, u32 foreground_color, u32 background_color
-+)
-+{
-+	int bytes_per_pixel = 4;
-+	
-+	int destination_offset = offset_y*info->fix.line_length + offset_x*bytes_per_pixel;
-+	u8 *destination = info->screen_base + destination_offset;
-+	
-+	if (offset_y + height > info->var.yres) return;
-+	if (offset_x + width > info->var.xres) return;
-+
-+	u8 current_character_part;
-+	for (int y = 0; y < height; y++) {
-+		for (int x = 0; x < width; x++) {
-+			if ((x & 7) == 0) current_character_part = *character++;
-+			fb_writel(
-+				(current_character_part & 0b10000000) ? foreground_color : background_color,
-+				destination
-+			);
-+			current_character_part <<= 1;
-+			destination += bytes_per_pixel;
-+		}
-+		destination += info->fix.line_length - width*bytes_per_pixel;
-+
-+	}
++	fbcondecor_fill_block(
++		info->screen_base, destination_draw_info,
++		source, source_draw_info,
++		height, width
++	);
 +}
 +
 +
-+void fbcondecor_putcs(struct vc_data *vc, struct fb_info *info,
-+                      const u16 *character_source, int character_count,
-+                      int row, int column,
-+                      int foreground_color_index,
-+                      int background_color_index)
-+{
++void fbcondecor_putcs(
++	struct vc_data *vc, struct fb_info *info,
++	const u16 *character_source, int character_count,
++	int row, int column,
++	int foreground_color_index,
++	int background_color_index
++) {
 +	if (!fbcondecor_initialized_state) return;
 +	u16 charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
-+	u32 foreground_color, background_color;
++	u32 background_color = fbcondecor_get_color(
++		info, background_color_index
++	);
++	u32 foreground_color = fbcondecor_get_color(
++		info, foreground_color_index
++	);
 +	u16 character;
 +	u8 *character_data;
-+
-+	int vc_background_color_index = (vc->vc_def_color >> 4) & 0xf;
-+
-+	int x_offset = column * vc->vc_font.width + fbcondecor_offset_x(vc);
-+	int y_offset = row * vc->vc_font.height + fbcondecor_offset_y(vc);
-+
-+	foreground_color = fbcondecor_get_color(info, foreground_color_index);
 +	
++	int vc_background_color_index = (vc->vc_def_color >> 4) & 0xf;
++	
++	int offset_x = column * vc->vc_font.width + fbcondecor_offset_x(vc);
++	int offset_y = row * vc->vc_font.height + fbcondecor_offset_y(vc);
++	
++	struct screen_draw_info destination_draw_info = get_draw_info(
++		info->fbcon_par->rotate,
++		info->var.xres, info->var.yres,
++		offset_x, offset_y,
++		4, info->fix.line_length
++	);
++	
++	struct screen_draw_info source_draw_info = {0};
++	u8* source = (u8*) &background_color;
 +	if (
-+		info->fbcon_par->blank_state ||
-+		background_color_index != vc_background_color_index ||
-+		!vc->vc_fbcondecor_image
++		!info->fbcon_par->blank_state &&
++		background_color_index == vc_background_color_index &&
++		vc->vc_fbcondecor_image
 +	) {
-+		background_color = fbcondecor_get_color(info, background_color_index);
-+		while (character_count--) {
-+			character = scr_readw(character_source++);
-+			character_data = vc->vc_font.data + (character & charmask) *
-+			                 vc->vc_font.height *
-+			                 ((vc->vc_font.width + 7) >> 3);
-+			fbcondecor_putc_atop_color(
-+				info, vc, y_offset, x_offset,
-+				vc->vc_font.height, vc->vc_font.width,
-+				character_data, foreground_color, background_color
-+			);
-+			x_offset += vc->vc_font.width;
-+		}
-+	} else {
-+		while (character_count--) {
-+			character = scr_readw(character_source++);
-+			character_data = vc->vc_font.data + (character & charmask) *
-+			                 vc->vc_font.height *
-+			                 ((vc->vc_font.width + 7) >> 3);
-+			fbcondecor_putc_atop_image(
-+				info, vc, y_offset, x_offset,
-+				vc->vc_font.height, vc->vc_font.width,
-+				character_data, foreground_color
-+			);
-+			x_offset += vc->vc_font.width;
-+		}
-+
++		int image_line_length = FBCON_SWAP(
++			info->fbcon_par->rotate,
++			4*info->var.xres,
++			4*info->var.yres
++		);
++		source = vc->vc_fbcondecor_image;
++		// We always read the source as if it were upright.
++		// This is to make the background image orient itself
++		// the same way the console is oriented.
++		source_draw_info = get_draw_info(
++			FB_ROTATE_UR,
++			// These 2 don't matter for upright.
++			0, 0,
++			offset_x, offset_y,
++			4, image_line_length
++		);
++	}
++	
++	while (character_count--) {
++		character = scr_readw(character_source++);
++		character_data = vc->vc_font.data + (character & charmask) *
++		                 vc->vc_font.height *
++		                 ((vc->vc_font.width + 7) >> 3);
++		fbcondecor_fill_character(
++			info->screen_base, destination_draw_info,
++			source, source_draw_info,
++			character_data, vc->vc_font.height, vc->vc_font.width,
++			foreground_color
++		);
++		destination_draw_info.start_position += (
++			destination_draw_info.next_pixel_offset *
++			vc->vc_font.width
++		);
++		source_draw_info.start_position += (
++			source_draw_info.next_pixel_offset *
++			vc->vc_font.width
++		);
 +	}
 +}
 +
-+void fbcondecor_cursor(struct fb_info *info, struct fb_cursor *cursor)
-+{
++void fbcondecor_cursor(struct fb_info *info, struct fb_cursor *cursor) {
 +	if (!fbcondecor_initialized_state) return;
 +	int i;
 +	unsigned int dsize, s_pitch;
 +	struct fbcon_par *ops = info->fbcon_par;
 +	struct vc_data *vc;
-+	u8 *src;
 +
-+	/* we really don't need any cursors while the console is blanked */
++	// We don't need any cursors while the console is blanked.
 +	if (info->state != FBINFO_STATE_RUNNING || ops->blank_state)
 +		return;
 +
@@ -530,66 +650,91 @@ diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video
 +
 +	s_pitch = (cursor->image.width + 7) >> 3;
 +	dsize = s_pitch * cursor->image.height;
-+	src = kmalloc(dsize, GFP_ATOMIC);
-+	if (!src)
++	u8* character_data = kmalloc(dsize, GFP_ATOMIC);
++	if (!character_data)
 +		return;
 +
 +	if (cursor->enable) {
 +		switch (cursor->rop) {
 +		case ROP_XOR:
 +			for (i = 0; i < dsize; i++)
-+				src[i] = cursor->image.data[i] ^ cursor->mask[i];
++				character_data[i] = (
++					cursor->image.data[i] ^ cursor->mask[i]
++				);
 +			break;
 +		case ROP_COPY:
 +		default:
 +			for (i = 0; i < dsize; i++)
-+				src[i] = cursor->image.data[i] & cursor->mask[i];
++				character_data[i] = (
++					cursor->image.data[i] & cursor->mask[i]
++				);
 +			break;
 +		}
 +	} else
-+		memcpy(src, cursor->image.data, dsize);
++		memcpy(character_data, cursor->image.data, dsize);
 +	
 +	int vc_background_color_index = (vc->vc_def_color >> 4) & 0xf;
-+
++	
++	struct screen_draw_info destination_draw_info = get_draw_info(
++		info->fbcon_par->rotate,
++		info->var.xres, info->var.yres,
++		cursor->image.dx + fbcondecor_offset_x(vc),
++		cursor->image.dy + fbcondecor_offset_y(vc),
++		4, info->fix.line_length
++	);
++	
++	struct screen_draw_info source_draw_info = {0};
++	u32 background_color = fbcondecor_get_color(
++		info, cursor->image.bg_color
++	);
++	u8* source = (u8*) &background_color;
 +	if (
-+		cursor->image.bg_color != vc_background_color_index ||
-+		!vc->vc_fbcondecor_image
++		cursor->image.bg_color == vc_background_color_index &&
++		vc->vc_fbcondecor_image
 +	) {
-+		fbcondecor_putc_atop_color(
-+			info, vc,
-+			cursor->image.dy + fbcondecor_offset_y(vc),
-+			cursor->image.dx + fbcondecor_offset_x(vc),
-+			cursor->image.height,
-+			cursor->image.width,
-+			src,
-+			fbcondecor_get_color(info, cursor->image.fg_color),
-+			fbcondecor_get_color(info, cursor->image.bg_color)
++		int image_line_length = FBCON_SWAP(
++			info->fbcon_par->rotate,
++			4*info->var.xres,
++			4*info->var.yres
 +		);
-+	} else {
-+		fbcondecor_putc_atop_image(
-+			info, vc,
-+			cursor->image.dy + fbcondecor_offset_y(vc),
++		source = vc->vc_fbcondecor_image;
++		// We always read the source as if it were upright.
++		// This is to make the background image orient itself
++		// the same way the console is oriented.
++		source_draw_info = get_draw_info(
++			FB_ROTATE_UR,
++			// NOTE: These 2 don't matter for upright
++			0, 0,
 +			cursor->image.dx + fbcondecor_offset_x(vc),
-+			cursor->image.height,
-+			cursor->image.width,
-+			src,
-+			fbcondecor_get_color(info, cursor->image.fg_color)
++			cursor->image.dy + fbcondecor_offset_y(vc),
++			4, image_line_length
 +		);
 +	}
 +
-+	kfree(src);
++
++	fbcondecor_fill_character(
++		info->screen_base, destination_draw_info,
++		source, source_draw_info,
++		character_data, cursor->image.height, cursor->image.width,
++		fbcondecor_get_color(info, cursor->image.fg_color)
++	);
++
++	kfree(character_data);
 +}
 +
 +
-+void fbcondecor_clear(struct vc_data *vc, struct fb_info *info,
-+                      int start_row, int start_column,
-+                      int span_rows, int span_columns,
-+                      int foreground_color_index, int background_color_index)
-+{
++void fbcondecor_clear(
++	struct vc_data *vc, struct fb_info *info,
++	int start_row, int start_column,
++	int span_rows, int span_columns,
++	int foreground_color_index, int background_color_index
++) {
 +	if (!fbcondecor_initialized_state) return;
 +
-+	int offset_y = start_row * vc->vc_font.height + fbcondecor_offset_y(vc);
-+	int offset_x = start_column * vc->vc_font.width + fbcondecor_offset_x(vc);
++	int offset_y = start_row*vc->vc_font.height + fbcondecor_offset_y(vc);
++	int offset_x = (
++		start_column*vc->vc_font.width + fbcondecor_offset_x(vc);
++	)
 +
 +	int height = span_rows * vc->vc_font.height;
 +	int width = span_columns * vc->vc_font.width;
@@ -603,37 +748,58 @@ diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video
 +                              int color_index, int bottom_only)
 +{
 +	if (!fbcondecor_initialized_state) return;
++
++	int xres = FBCON_SWAP(
++		info->fbcon_par->rotate, info->var.xres, info->var.yres
++	);
++	int yres = FBCON_SWAP(
++		info->fbcon_par->rotate, info->var.yres, info->var.xres
++	);
++
 +	unsigned int vc_width = vc->vc_cols*vc->vc_font.width;
 +	unsigned int vc_height = vc->vc_rows*vc->vc_font.height;
 +
 +	if (!bottom_only) {
-+		/* top margin */
-+		fbcondecor_fill(info, vc,
-+		                0, 0,
-+		                fbcondecor_offset_y(vc), info->var.xres,
-+		                color_index);
-+		/* left margin */
-+		fbcondecor_fill(info, vc,
-+		                fbcondecor_offset_y(vc), 0,
-+		                vc_height, fbcondecor_offset_x(vc),
-+		                color_index);
-+		/* right margin */
-+		fbcondecor_fill(info, vc,
-+		                fbcondecor_offset_y(vc), fbcondecor_offset_x(vc) + vc_width,
-+		                vc_height, info->var.xres - fbcondecor_offset_x(vc) - vc_width,
-+		                color_index);
++		// Top margin
++		fbcondecor_fill(
++			info, vc,
++			0, 0,
++			fbcondecor_offset_y(vc), xres,
++			color_index
++		);
++		// Left margin
++		fbcondecor_fill(
++			info, vc,
++			fbcondecor_offset_y(vc), 0,
++			vc_height, fbcondecor_offset_x(vc),
++			color_index
++		);
++		// Right margin
++		fbcondecor_fill(
++			info, vc,
++			fbcondecor_offset_y(vc),
++			fbcondecor_offset_x(vc) + vc_width,
++			vc_height,
++			xres - fbcondecor_offset_x(vc) - vc_width,
++			color_index
++		);
 +	}
-+	fbcondecor_fill(info, vc,
-+	                fbcondecor_offset_y(vc) + vc_height, 0,
-+	                info->var.yres - fbcondecor_offset_y(vc) - vc_height, info->var.xres,
-+	                color_index);
++	// Bottom margin
++	fbcondecor_fill(
++		info, vc,
++		fbcondecor_offset_y(vc) + vc_height, 0,
++		yres - fbcondecor_offset_y(vc) - vc_height, xres,
++		color_index
++	);
 +}
 +
 +void fbcondecor_bmove_redraw(struct vc_data *vc, struct fb_info *info, int y,
 +                             int source_x, int destination_x, int width)
 +{
 +	if (!fbcondecor_initialized_state) return;
-+	u16 *destination = (u16 *) (vc->vc_origin + vc->vc_size_row*y + destination_x*2);
++	u16 *destination = (u16 *) (
++		vc->vc_origin + vc->vc_size_row*y + destination_x*2
++	);
 +	u16 *source = destination + (destination_x - source_x);
 +	u16 *current_run = destination;
 +
@@ -650,29 +816,49 @@ diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video
 +
 +	do {
 +		character = scr_readw(destination);
-+		// we send only runs of characters with the same attributes to putcs
++		// We send only runs of characters with the same attributes to
++		// putcs.
 +		if (current_attribute != (character & attrmask)) {
-+			int foreground_color_index = attr_fgcol(fgshift, current_attribute);
-+			int background_color_index = attr_bgcol(bgshift, current_attribute);
++			int foreground_color_index = attr_fgcol(
++				fgshift, current_attribute
++			);
++			int background_color_index = attr_bgcol(
++				bgshift, current_attribute
++			);
 +			current_attribute = character & attrmask;
 +			if (destination > current_run) {
 +
 +				fbcondecor_putcs(
-+					vc, info, current_run, destination - current_run, y, current_x,
-+					foreground_color_index, background_color_index
++					vc, info, current_run,
++					destination - current_run, y,
++					current_x,
++					foreground_color_index,
++					background_color_index
 +				);
 +				current_x += destination - current_run;
 +				current_run = destination;
 +			}
 +		}
-+		// if a character would have been the same anyway, we don't change it
-+		if (source >= line_start && source < line_end && character == scr_readw(source)) {
-+			int foreground_color_index = attr_fgcol(fgshift, current_attribute);
-+			int background_color_index = attr_bgcol(bgshift, current_attribute);
++		// If a character would have been the same anyway,
++		// we don't change it.
++		if (
++			source >= line_start &&
++			source < line_end &&
++			character == scr_readw(source)
++		) {
++			int foreground_color_index = attr_fgcol(
++				fgshift, current_attribute
++			);
++			int background_color_index = attr_bgcol(
++				bgshift, current_attribute
++			);
 +			if (destination > current_run) {
 +				fbcondecor_putcs(
-+					vc, info, current_run, destination - current_run, y, current_x,
-+					foreground_color_index, background_color_index
++					vc, info, current_run,
++					destination - current_run, y,
++					current_x,
++					foreground_color_index,
++					background_color_index
 +				);
 +				current_x += destination - current_run + 1;
 +				current_run = destination + 1;
@@ -685,17 +871,22 @@ diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video
 +		destination++;
 +	} while (destination < line_end);
 +	if (destination > current_run) {
-+		int foreground_color_index = attr_fgcol(fgshift, current_attribute);
-+		int background_color_index = attr_bgcol(bgshift, current_attribute);
++		int foreground_color_index = attr_fgcol(
++			fgshift, current_attribute
++		);
++		int background_color_index = attr_bgcol(
++			bgshift, current_attribute
++		);
 +		fbcondecor_putcs(
-+			vc, info, current_run, destination - current_run, y, current_x,
++			vc, info, current_run,
++			destination - current_run, y, current_x,
 +			foreground_color_index, background_color_index
 +		);
 +	}
 +}
 diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev/core/fbcon.c
 --- oldlinux/drivers/video/fbdev/core/fbcon.c	2026-04-30 11:13:05.000000000 +0200
-+++ newlinux/drivers/video/fbdev/core/fbcon.c	2026-05-09 00:19:57.254102225 +0200
++++ newlinux/drivers/video/fbdev/core/fbcon.c	2026-05-10 20:58:01.252689440 +0200
 @@ -81,8 +81,10 @@
  #include <linux/uaccess.h>
  #include <linux/vga_switcheroo.h>
@@ -733,7 +924,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  static void fbcon_set_palette(struct vc_data *vc, const unsigned char *table);
  
  /*
-@@ -1022,11 +1025,25 @@
+@@ -1022,11 +1025,17 @@
  		vc->vc_font.data = (void *)(p->fontdata = font->data);
  		vc->vc_font.charcount = font->charcount;
  	}
@@ -742,16 +933,8 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
 -	rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
 +	
 +	if (fbcondecor_active(info, vc) && vc->vc_fbcondecor_geometry) {
-+		cols = FBCON_SWAP(
-+			par->rotate,
-+			vc->vc_fbcondecor_geometry->width,
-+			vc->vc_fbcondecor_geometry->height
-+		);
-+		rows = FBCON_SWAP(
-+			par->rotate,
-+			vc->vc_fbcondecor_geometry->height,
-+			vc->vc_fbcondecor_geometry->width
-+		);
++		cols = vc->vc_fbcondecor_geometry->width;
++		rows = vc->vc_fbcondecor_geometry->height;
 +	} else {
 +		cols = FBCON_SWAP(par->rotate, info->var.xres, info->var.yres);
 +		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
@@ -762,7 +945,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	vc_resize(vc, cols, rows);
  
  	pr_debug("mode:   %s\n", info->fix.id);
-@@ -1061,7 +1078,7 @@
+@@ -1061,7 +1070,7 @@
  		logo_shown = FBCON_LOGO_DONTSHOW;
  
  	if (vc != svc || logo_shown == FBCON_LOGO_DONTSHOW ||
@@ -771,23 +954,15 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		logo = 0;
  
  	if (var_to_display(p, &info->var, info))
-@@ -1130,8 +1147,21 @@
+@@ -1130,8 +1139,13 @@
  
  	cols = vc->vc_cols;
  	rows = vc->vc_rows;
 -	new_cols = FBCON_SWAP(par->rotate, info->var.xres, info->var.yres);
 -	new_rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
 +	if (fbcondecor_active(info, vc) && vc->vc_fbcondecor_geometry) {
-+		new_cols = FBCON_SWAP(
-+			par->rotate,
-+			vc->vc_fbcondecor_geometry->width,
-+			vc->vc_fbcondecor_geometry->height
-+		);
-+		new_rows = FBCON_SWAP(
-+			par->rotate,
-+			vc->vc_fbcondecor_geometry->height,
-+			vc->vc_fbcondecor_geometry->width
-+		);
++		new_cols = vc->vc_fbcondecor_geometry->width;
++		new_rows = vc->vc_fbcondecor_geometry->height;
 +	} else {
 +		new_cols = FBCON_SWAP(par->rotate, info->var.xres, info->var.yres);
 +		new_rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
@@ -795,7 +970,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	new_cols /= vc->vc_font.width;
  	new_rows /= vc->vc_font.height;
  
-@@ -1340,19 +1370,21 @@
+@@ -1340,19 +1354,21 @@
  	struct fbcon_display *p = &fb_display[vc->vc_num];
  	struct fbcon_par *par = info->fbcon_par;
  
@@ -822,23 +997,15 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  }
  
  static void fbcon_cursor(struct vc_data *vc, bool enable)
-@@ -1440,8 +1472,21 @@
+@@ -1440,8 +1456,13 @@
  	if (!*vc->uni_pagedict_loc)
  		con_copy_unimap(vc, svc);
  
 -	cols = FBCON_SWAP(par->rotate, info->var.xres, info->var.yres);
 -	rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
 +	if (fbcondecor_active(info, vc) && vc->vc_fbcondecor_geometry) {
-+		cols = FBCON_SWAP(
-+			par->rotate,
-+			vc->vc_fbcondecor_geometry->width,
-+			vc->vc_fbcondecor_geometry->height
-+		);
-+		rows = FBCON_SWAP(
-+			par->rotate,
-+			vc->vc_fbcondecor_geometry->height,
-+			vc->vc_fbcondecor_geometry->width
-+		);
++		cols = vc->vc_fbcondecor_geometry->width;
++		rows = vc->vc_fbcondecor_geometry->height;
 +	} else {
 +		cols = FBCON_SWAP(par->rotate, info->var.xres, info->var.yres);
 +		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
@@ -846,7 +1013,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	cols /= vc->vc_font.width;
  	rows /= vc->vc_font.height;
  	ret = vc_resize(vc, cols, rows);
-@@ -1754,6 +1799,7 @@
+@@ -1754,6 +1775,7 @@
  		}
  		return;
  	}
@@ -854,7 +1021,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	par->bitops->bmove(vc, info, real_y(p, sy), sx, real_y(p, dy), dx,
  			     height, width);
  }
-@@ -1803,6 +1849,8 @@
+@@ -1803,6 +1825,8 @@
  	case SM_UP:
  		if (count > vc->vc_rows)	/* Maximum realistic size */
  			count = vc->vc_rows;
@@ -863,7 +1030,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		switch (fb_scrollmode(p)) {
  		case SCROLL_MOVE:
  			fbcon_redraw_blit(vc, info, p, t, b - t - count,
-@@ -1891,6 +1939,8 @@
+@@ -1891,6 +1915,8 @@
  	case SM_DOWN:
  		if (count > vc->vc_rows)	/* Maximum realistic size */
  			count = vc->vc_rows;
@@ -872,7 +1039,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		switch (fb_scrollmode(p)) {
  		case SCROLL_MOVE:
  			fbcon_redraw_blit(vc, info, p, b - 1, b - t - count,
-@@ -2074,8 +2124,13 @@
+@@ -2074,8 +2100,13 @@
  	var.yres = virt_h * virt_fh;
  	x_diff = info->var.xres - var.xres;
  	y_diff = info->var.yres - var.yres;
@@ -888,7 +1055,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		const struct fb_videomode *mode;
  
  		pr_debug("attempting resize %ix%i\n", var.xres, var.yres);
-@@ -2101,6 +2156,31 @@
+@@ -2101,6 +2132,31 @@
  	return 0;
  }
  
@@ -920,7 +1087,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  static bool fbcon_switch(struct vc_data *vc)
  {
  	struct fb_info *info, *old_info = NULL;
-@@ -2111,6 +2191,9 @@
+@@ -2111,6 +2167,9 @@
  
  	info = fbcon_info_from_console(vc->vc_num);
  	par = info->fbcon_par;
@@ -930,7 +1097,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  
  	if (logo_shown >= 0) {
  		struct vc_data *conp2 = vc_cons[logo_shown].d;
-@@ -2121,9 +2204,6 @@
+@@ -2121,9 +2180,6 @@
  		logo_shown = FBCON_LOGO_CANSHOW;
  	}
  
@@ -940,7 +1107,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	/*
  	 * FIXME: If we have multiple fbdev's loaded, we need to
  	 * update all info->currcon.  Perhaps, we can place this
-@@ -2162,11 +2242,10 @@
+@@ -2162,11 +2218,10 @@
  					"unhandled fb_set_par error, "
  					"error code %d\n", ret);
  		}
@@ -953,7 +1120,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	if (!fbcon_is_active(vc, info) || par->blank_state != FB_BLANK_UNBLANK)
  		fbcon_del_cursor_work(info);
  	else
-@@ -2210,6 +2289,44 @@
+@@ -2210,6 +2265,44 @@
  		par->var.xoffset = par->var.yoffset = p->yscroll = 0;
  		par->bitops->update_start(info);
  	}
@@ -998,7 +1165,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  
  	fbcon_set_palette(vc, color_table);
  	fbcon_clear_margins(vc, 0);
-@@ -2268,8 +2385,9 @@
+@@ -2268,8 +2361,9 @@
  			fbcon_cursor(vc, !blank);
  			par->cursor_flash = (!blank);
  
@@ -1009,7 +1176,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		}
  
  		if (!blank)
-@@ -2438,15 +2556,31 @@
+@@ -2438,15 +2532,23 @@
  		set_vc_hi_font(vc, true);
  
  	if (resize) {
@@ -1020,16 +1187,8 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
 -		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
 +		info->var.xoffset = info->var.yoffset = p->yscroll = 0;
 +		if (fbcondecor_active(info, vc) && vc->vc_fbcondecor_geometry) {
-+			cols = FBCON_SWAP(
-+				par->rotate,
-+				vc->vc_fbcondecor_geometry->width,
-+				vc->vc_fbcondecor_geometry->height
-+			);
-+			rows = FBCON_SWAP(
-+				par->rotate,
-+				vc->vc_fbcondecor_geometry->height,
-+				vc->vc_fbcondecor_geometry->width
-+			);
++			cols = vc->vc_fbcondecor_geometry->width;
++			rows = vc->vc_fbcondecor_geometry->height;
 +		} else {
 +			cols = FBCON_SWAP(par->rotate, info->var.xres, info->var.yres);
 +			rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
@@ -1044,7 +1203,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	} else if (con_is_visible(vc)
  		   && vc->vc_mode == KD_TEXT) {
  		fbcon_clear_margins(vc, 0);
-@@ -2685,7 +2819,17 @@
+@@ -2685,7 +2787,17 @@
  		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
  		cols /= vc->vc_font.width;
  		rows /= vc->vc_font.height;
@@ -1063,7 +1222,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  		updatescrollmode(p, info, vc);
  		scrollback_max = 0;
  		scrollback_current = 0;
-@@ -2728,7 +2872,15 @@
+@@ -2728,7 +2840,15 @@
  		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
  		cols /= vc->vc_font.width;
  		rows /= vc->vc_font.height;
@@ -1080,7 +1239,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	}
  
  	if (fg != -1)
-@@ -3123,6 +3275,10 @@
+@@ -3123,6 +3243,10 @@
  			caps->len = vc->vc_font.charcount;
  		}
  	}
@@ -1091,7 +1250,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  }
  
  int fbcon_set_con2fb_map_ioctl(void __user *argp)
-@@ -3396,6 +3552,7 @@
+@@ -3396,6 +3520,7 @@
  		con2fb_map[i] = -1;
  
  	fbcon_start();
@@ -1099,12 +1258,140 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.c newlinux/drivers/video/fbdev
  	console_unlock();
  }
  
+diff -ruN oldlinux/drivers/video/fbdev/core/fbcon_ccw.c newlinux/drivers/video/fbdev/core/fbcon_ccw.c
+--- oldlinux/drivers/video/fbdev/core/fbcon_ccw.c	2026-04-30 11:13:05.000000000 +0200
++++ newlinux/drivers/video/fbdev/core/fbcon_ccw.c	2026-05-11 00:40:10.845858024 +0200
+@@ -17,6 +17,7 @@
+ #include <asm/types.h>
+ #include "fbcon.h"
+ #include "fbcon_rotate.h"
++#include "fbcondecor.h"
+ 
+ /*
+  * Rotation 270 degrees
+@@ -63,6 +64,13 @@
+ static void ccw_bmove(struct vc_data *vc, struct fb_info *info, int sy,
+ 		     int sx, int dy, int dx, int height, int width)
+ {
++	if (fbcondecor_active(info, vc)) {
++		if (height == 1 && dy == sy) {
++			/* must use slower redraw bmove to keep background pic intact */
++			fbcondecor_bmove_redraw(vc, info, sy, sx, dx, width);
++		}
++		return;
++	}
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	struct fb_copyarea area;
+ 	u32 vyres = GETVYRES(par->p, info);
+@@ -80,6 +88,10 @@
+ static void ccw_clear(struct vc_data *vc, struct fb_info *info, int sy,
+ 		     int sx, int height, int width, int fg, int bg)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_clear(vc, info, sy, sx, height, width, fg, bg);
++		return;
++	}
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	struct fb_fillrect region;
+ 	u32 vyres = GETVYRES(par->p, info);
+@@ -129,6 +141,10 @@
+ 		      const unsigned short *s, int count, int yy, int xx,
+ 		      int fg, int bg)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_putcs(vc, info, s, count, yy, xx, fg, bg);
++		return;
++	}
+ 	struct fb_image image;
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	u32 width = (vc->vc_font.height + 7)/8;
+@@ -190,6 +206,10 @@
+ static void ccw_clear_margins(struct vc_data *vc, struct fb_info *info,
+ 			      int color, int bottom_only)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_clear_margins(vc, info, color, bottom_only);
++		return;
++	}
+ 	unsigned int cw = vc->vc_font.width;
+ 	unsigned int ch = vc->vc_font.height;
+ 	unsigned int rw = info->var.yres - (vc->vc_cols*cw);
+@@ -220,6 +240,10 @@
+ static void ccw_cursor(struct vc_data *vc, struct fb_info *info, bool enable,
+ 		       int fg, int bg)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_unrotated_bit_cursor(vc, info, enable, fg, bg);
++		return;
++	}
+ 	struct fb_cursor cursor;
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	unsigned short charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
+diff -ruN oldlinux/drivers/video/fbdev/core/fbcon_cw.c newlinux/drivers/video/fbdev/core/fbcon_cw.c
+--- oldlinux/drivers/video/fbdev/core/fbcon_cw.c	2026-04-30 11:13:05.000000000 +0200
++++ newlinux/drivers/video/fbdev/core/fbcon_cw.c	2026-05-11 00:39:53.527158547 +0200
+@@ -17,6 +17,7 @@
+ #include <asm/types.h>
+ #include "fbcon.h"
+ #include "fbcon_rotate.h"
++#include "fbcondecor.h"
+ 
+ /*
+  * Rotation 90 degrees
+@@ -48,6 +49,13 @@
+ static void cw_bmove(struct vc_data *vc, struct fb_info *info, int sy,
+ 		     int sx, int dy, int dx, int height, int width)
+ {
++	if (fbcondecor_active(info, vc)) {
++		if (height == 1 && dy == sy) {
++			/* must use slower redraw bmove to keep background pic intact */
++			fbcondecor_bmove_redraw(vc, info, sy, sx, dx, width);
++		}
++		return;
++	}
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	struct fb_copyarea area;
+ 	u32 vxres = GETVXRES(par->p, info);
+@@ -114,6 +122,10 @@
+ 		      const unsigned short *s, int count, int yy, int xx,
+ 		      int fg, int bg)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_putcs(vc, info, s, count, yy, xx, fg, bg);
++		return;
++	}
+ 	struct fb_image image;
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	u32 width = (vc->vc_font.height + 7)/8;
+@@ -173,6 +185,10 @@
+ static void cw_clear_margins(struct vc_data *vc, struct fb_info *info,
+ 			     int color, int bottom_only)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_clear_margins(vc, info, color, bottom_only);
++		return;
++	}
+ 	unsigned int cw = vc->vc_font.width;
+ 	unsigned int ch = vc->vc_font.height;
+ 	unsigned int rw = info->var.yres - (vc->vc_cols*cw);
+@@ -203,6 +219,10 @@
+ static void cw_cursor(struct vc_data *vc, struct fb_info *info, bool enable,
+ 		      int fg, int bg)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_unrotated_bit_cursor(vc, info, enable, fg, bg);
++		return;
++	}
+ 	struct fb_cursor cursor;
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	unsigned short charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
 diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/fbdev/core/fbcondecor.c
 --- oldlinux/drivers/video/fbdev/core/fbcondecor.c	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/drivers/video/fbdev/core/fbcondecor.c	2026-05-09 00:18:59.748467536 +0200
-@@ -0,0 +1,247 @@
++++ newlinux/drivers/video/fbdev/core/fbcondecor.c	2026-05-11 02:21:56.666040418 +0200
+@@ -0,0 +1,336 @@
 +/*
-+ *  linux/drivers/video/fbdev/core/fbcondecor.c -- Framebuffer console decorations
++ *  linux/drivers/video/fbdev/core/fbcondecor.c -- Framebuffer console
++ *                                                 decorations
 + *
 + *  Copyright (C) 2004-2009 Michal Januszewski <michalj+fbcondecor@gmail.com>
 + *  Copyright (C) 2026-2026 NyteLyte <nytelyte@tuta.io>
@@ -1162,13 +1449,40 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +	struct fb_info *info = fbcon_info_from_console(vc->vc_num);
 +
 +	size_t image_size;
-+	if (check_mul_overflow(info->var.xres, info->var.yres, &image_size))
++	if (check_mul_overflow(info->var.xres, info->var.yres, &image_size)) {
++		printk(
++			KERN_ERR
++			"fbcondecor: framebuffer resolution too large\n"
++		);
 +		return -EINVAL;
-+	if (check_mul_overflow(image_size, (size_t) 4, &image_size))
++	}
++	if (check_mul_overflow(image_size, (size_t) 4, &image_size)) {
++		printk(
++			KERN_ERR
++			"fbcondecor: framebuffer resolution too large\n"
++		);
 +		return -EINVAL;
++	}
 +
-+	if (command_flag & FBCONDECOR_FLAG_GET_GEOMETRY && !user_get_geometry) return -EINVAL;
-+	if (command_flag & FBCONDECOR_FLAG_GET_IMAGE && !user_get_image) return -EINVAL;
++	if (
++		command_flag &
++		FBCONDECOR_FLAG_GET_GEOMETRY && !user_get_geometry
++	) {
++		printk(
++			KERN_ERR
++			"fbcondecor: unable to copy "
++			"geometry to userspace\n"
++		);
++		return -EINVAL;
++	} 
++	if (command_flag & FBCONDECOR_FLAG_GET_IMAGE && !user_get_image) {
++		printk(
++			KERN_ERR
++			"fbcondecor: unable to copy "
++			"image to userspace\n"
++		);
++		return -EINVAL;
++	}
 +	struct fbcondecor_geometry *old_geometry = vc->vc_fbcondecor_geometry;
 +	u8 *old_image = vc->vc_fbcondecor_image;
 +	u16 previous_state = old_geometry ? FBCONDECOR_STATE_GEOMETRY : 0;
@@ -1176,21 +1490,50 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +
 +	struct fbcondecor_geometry *new_geometry = NULL;
 +	u8 *new_image = NULL;
++
 +	
 +	if (command_flag & FBCONDECOR_FLAG_SET_GEOMETRY && user_set_geometry) {
-+		new_geometry = kmalloc(sizeof(struct fbcondecor_geometry), GFP_KERNEL);
++		new_geometry = kmalloc(
++			sizeof(struct fbcondecor_geometry),
++			GFP_KERNEL
++		);
++		int col_resolution = FBCON_SWAP(
++			info->fbcon_par->rotate, info->var.xres, info->var.yres
++		);
++		int row_resolution = FBCON_SWAP(
++			info->fbcon_par->rotate, info->var.yres, info->var.xres
++		);
 +		if (!new_geometry) return -ENOMEM;
-+		if (copy_from_user(new_geometry, user_set_geometry, sizeof(struct fbcondecor_geometry))) {
++		if (copy_from_user(
++			new_geometry,
++			user_set_geometry,
++			sizeof(struct fbcondecor_geometry)
++		)) {
++			printk(
++				KERN_ERR
++				"fbcondecor: unable to copy "
++				"geometry from userspace\n"
++			);
 +			kfree(new_geometry);
 +			return -EFAULT;
 +		}
 +		if (
 +			!new_geometry->width ||
 +			!new_geometry->height ||
-+			new_geometry->offset_x + new_geometry->width > info->var.xres ||
-+			new_geometry->offset_y + new_geometry->height > info->var.yres
++			(
++				new_geometry->offset_x +
++				new_geometry->width > col_resolution
++			) ||
++			(
++				new_geometry->offset_y +
++				new_geometry->height > row_resolution
++			)
 +		) {
-+			printk(KERN_ERR "fbcondecor: invalid geometry passed\n");
++			printk(
++				KERN_ERR
++				"fbcondecor: invalid geometry passed "
++				"from userspace\n"
++			);
 +			kfree(new_geometry);
 +			return -EINVAL;
 +		}
@@ -1203,6 +1546,11 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +			return -ENOMEM;
 +		}
 +		if (copy_from_user(new_image, user_set_image, image_size)) {
++			printk(
++				KERN_ERR
++				"fbcondecor: unable to copy image "
++				"from userspace\n"
++			);
 +			if (new_geometry) kfree(new_geometry);
 +			vfree(new_image);
 +			return -EFAULT;
@@ -1210,7 +1558,16 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +	}
 +	
 +	if (old_geometry && command_flag & FBCONDECOR_FLAG_GET_GEOMETRY) {
-+		if (copy_to_user(user_get_geometry, old_geometry, sizeof(struct fbcondecor_geometry))) {
++		if (copy_to_user(
++			user_get_geometry,
++			old_geometry,
++			sizeof(struct fbcondecor_geometry)
++		)) {
++			printk(
++				KERN_ERR
++				"fbcondecor: unable to copy geometry "
++				"to userspace\n"
++			);
 +			if (new_geometry) kfree(new_geometry);
 +			if (new_image) vfree(new_image);
 +			return -EFAULT;
@@ -1219,6 +1576,11 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +
 +	if (old_image && command_flag & FBCONDECOR_FLAG_GET_IMAGE) {
 +		if(copy_to_user(user_get_image, old_image, image_size)) {
++			printk(
++				KERN_ERR
++				"fbcondecor: unable to copy "
++				"image to userspace\n"
++			);
 +			if (new_geometry) kfree(new_geometry);
 +			if (new_image) vfree(new_image);
 +			return -EFAULT;
@@ -1232,16 +1594,8 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +		vc->vc_fbcondecor_geometry = new_geometry;
 +		u32 cols, rows;
 +		if (vc->vc_fbcondecor_geometry) {
-+			cols = FBCON_SWAP(
-+				info->fbcon_par->rotate,
-+				vc->vc_fbcondecor_geometry->width,
-+				vc->vc_fbcondecor_geometry->height
-+			);
-+			rows = FBCON_SWAP(
-+				info->fbcon_par->rotate,
-+				vc->vc_fbcondecor_geometry->height,
-+				vc->vc_fbcondecor_geometry->width
-+			);
++			cols = vc->vc_fbcondecor_geometry->width;
++			rows = vc->vc_fbcondecor_geometry->height;
 +		} else {
 +			cols = FBCON_SWAP(
 +				info->fbcon_par->rotate,
@@ -1266,9 +1620,11 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +
 +	if (fg_console == vc->vc_num && redraw) {
 +		redraw_screen(vc, 0);
-+		update_region(vc, vc->vc_origin +
-+		              vc->vc_size_row * vc->vc_top,
-+		              vc->vc_size_row * (vc->vc_bottom - vc->vc_top) / 2);
++		update_region(
++			vc, vc->vc_origin +
++			vc->vc_size_row * vc->vc_top,
++			vc->vc_size_row * (vc->vc_bottom - vc->vc_top) / 2
++		);
 +		fbcon_clear_margins(vc, 0);
 +	}
 +
@@ -1284,9 +1640,28 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +	
 +	struct fbcondecor_command command;
 +	struct fbcondecor_command __user *wrapper = u64_to_user_ptr((u64) arg);
-+	if (copy_from_user(&command, wrapper, sizeof(command))) return -EFAULT;
-+	if (command.pad != 0) return -EINVAL;
-+	if (!vc_cons_allocated(command.vc)) return -EINVAL;
++	if (copy_from_user(&command, wrapper, sizeof(command))) {
++		printk(
++			KERN_ERR
++			"fbcondecor: unable to copy command from userspace\n"
++		);
++		return -EFAULT;
++	}
++	if (command.pad != 0) {
++		printk(
++			KERN_ERR
++			"fbcondecor: invalid command, padding is not 0\n"
++		);
++		return -EINVAL;
++	}
++	if (!vc_cons_allocated(command.vc)) {
++		printk(
++			KERN_ERR
++			"fbcondecor: invalid command, console "
++			"is not allocated\n"
++		);
++		return -EINVAL;
++	}
 +	vc = vc_cons[command.vc].d;
 +
 +	if (cmd != FBIO_CONDECOR) return -ENOIOCTLCMD;
@@ -1352,10 +1727,11 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +}
 diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.h newlinux/drivers/video/fbdev/core/fbcondecor.h
 --- oldlinux/drivers/video/fbdev/core/fbcondecor.h	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/drivers/video/fbdev/core/fbcondecor.h	2026-05-09 00:29:37.084932659 +0200
-@@ -0,0 +1,152 @@
++++ newlinux/drivers/video/fbdev/core/fbcondecor.h	2026-05-11 02:23:49.985199832 +0200
+@@ -0,0 +1,173 @@
 +/*
-+ *  linux/drivers/video/fbdev/core/fbcondecor.h -- Framebuffer Console Decoration headers
++ *  linux/drivers/video/fbdev/core/fbcondecor.h -- Framebuffer console
++ *                                                 decoration headers
 + *
 + *  Copyright (C) 2004 Michal Januszewski <michalj+fbcondecor@gmail.com>
 + *  Copyright (C) 2026-2026 NyteLyte <nytelyte@tuta.io>
@@ -1373,6 +1749,11 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.h newlinux/drivers/video/
 +#include <linux/console_struct.h>
 +
 +#ifdef CONFIG_FBCONDECOR
++
++/* bitblit.c */
++void fbcondecor_unrotated_bit_cursor(
++	struct vc_data *vc, struct fb_info *info, bool enable, int fg, int bg
++);
 +
 +/* fbcondecor.c */
 +void fbcondecor_reset(void);
@@ -1421,7 +1802,9 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.h newlinux/drivers/video/
 +
 +
 +/* utilities */
-+static inline bool fbcondecor_active(struct fb_info *info, struct vc_data* vc) {
++static inline bool fbcondecor_active(
++	struct fb_info *info, struct vc_data* vc
++) {
 +	return (
 +		fbcondecor_initialized_state &&
 +		(vc->vc_fbcondecor_geometry || vc->vc_fbcondecor_image) &&
@@ -1435,14 +1818,27 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.h newlinux/drivers/video/
 +}
 +
 +static inline u16 fbcondecor_offset_x(struct vc_data *vc) {
-+	return vc->vc_fbcondecor_geometry ? vc->vc_fbcondecor_geometry->offset_x : 0;
++	return (
++		vc->vc_fbcondecor_geometry ?
++		vc->vc_fbcondecor_geometry->offset_x :
++		0
++	);
 +}
 +
 +static inline u16 fbcondecor_offset_y(struct vc_data *vc) {
-+	return vc->vc_fbcondecor_geometry ? vc->vc_fbcondecor_geometry->offset_y : 0;
++	return (
++		vc->vc_fbcondecor_geometry ?
++		vc->vc_fbcondecor_geometry->offset_y :
++		0
++	);
 +}
 +
 +#else /* CONFIG_FBCONDECOR */
++
++/* bitblit.c */
++void fbcondecor_unrotated_bit_cursor(
++	struct vc_data *vc, struct fb_info *info, bool enable, int fg, int bg
++);
 +
 +/* fbcondecor.c */
 +static inline int fbcondecor_init(void) { return 0; }
@@ -1519,6 +1915,75 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon.h newlinux/drivers/video/fbdev
  #define FBCON_SWAP(i,r,v) ({ \
          typeof(r) _r = (r);  \
          typeof(v) _v = (v);  \
+diff -ruN oldlinux/drivers/video/fbdev/core/fbcon_ud.c newlinux/drivers/video/fbdev/core/fbcon_ud.c
+--- oldlinux/drivers/video/fbdev/core/fbcon_ud.c	2026-04-30 11:13:05.000000000 +0200
++++ newlinux/drivers/video/fbdev/core/fbcon_ud.c	2026-05-11 00:39:28.668419781 +0200
+@@ -17,6 +17,7 @@
+ #include <asm/types.h>
+ #include "fbcon.h"
+ #include "fbcon_rotate.h"
++#include "fbcondecor.h"
+ 
+ /*
+  * Rotation 180 degrees
+@@ -48,6 +49,13 @@
+ static void ud_bmove(struct vc_data *vc, struct fb_info *info, int sy,
+ 		     int sx, int dy, int dx, int height, int width)
+ {
++	if (fbcondecor_active(info, vc)) {
++		if (height == 1 && dy == sy) {
++			/* must use slower redraw bmove to keep background pic intact */
++			fbcondecor_bmove_redraw(vc, info, sy, sx, dx, width);
++		}
++		return;
++	}
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	struct fb_copyarea area;
+ 	u32 vyres = GETVYRES(par->p, info);
+@@ -66,6 +74,10 @@
+ static void ud_clear(struct vc_data *vc, struct fb_info *info, int sy,
+ 		     int sx, int height, int width, int fg, int bg)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_clear(vc, info, sy, sx, height, width, fg, bg);
++		return;
++	}
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	struct fb_fillrect region;
+ 	u32 vyres = GETVYRES(par->p, info);
+@@ -151,6 +163,10 @@
+ 		      const unsigned short *s, int count, int yy, int xx,
+ 		      int fg, int bg)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_putcs(vc, info, s, count, yy, xx, fg, bg);
++		return;
++	}
+ 	struct fb_image image;
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	u32 width = (vc->vc_font.width + 7)/8;
+@@ -221,6 +237,10 @@
+ static void ud_clear_margins(struct vc_data *vc, struct fb_info *info,
+ 			     int color, int bottom_only)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_clear_margins(vc, info, color, bottom_only);
++		return;
++	}
+ 	unsigned int cw = vc->vc_font.width;
+ 	unsigned int ch = vc->vc_font.height;
+ 	unsigned int rw = info->var.xres - (vc->vc_cols*cw);
+@@ -250,6 +270,10 @@
+ static void ud_cursor(struct vc_data *vc, struct fb_info *info, bool enable,
+ 		      int fg, int bg)
+ {
++	if (fbcondecor_active(info, vc)) {
++		fbcondecor_unrotated_bit_cursor(vc, info, enable, fg, bg);
++		return;
++	}
+ 	struct fb_cursor cursor;
+ 	struct fbcon_par *par = info->fbcon_par;
+ 	unsigned short charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
 diff -ruN oldlinux/drivers/video/fbdev/core/Kconfig newlinux/drivers/video/fbdev/core/Kconfig
 --- oldlinux/drivers/video/fbdev/core/Kconfig	2026-04-30 11:13:05.000000000 +0200
 +++ newlinux/drivers/video/fbdev/core/Kconfig	2026-05-08 14:23:34.806573010 +0200
