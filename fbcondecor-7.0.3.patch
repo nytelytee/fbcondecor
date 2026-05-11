@@ -1,7 +1,7 @@
 diff -ruN oldlinux/Documentation/fb/fbcondecor.rst newlinux/Documentation/fb/fbcondecor.rst
 --- oldlinux/Documentation/fb/fbcondecor.rst	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/Documentation/fb/fbcondecor.rst	2026-05-05 09:58:20.836896366 +0200
-@@ -0,0 +1,153 @@
++++ newlinux/Documentation/fb/fbcondecor.rst	2026-05-11 05:00:07.881083551 +0200
+@@ -0,0 +1,178 @@
 +==========
 +Fbcondecor
 +==========
@@ -47,10 +47,10 @@ diff -ruN oldlinux/Documentation/fb/fbcondecor.rst newlinux/Documentation/fb/fbc
 +
 +  #ifndef _UAPI_LINUX_FBCONDECOR_H
 +  #define _UAPI_LINUX_FBCONDECOR_H
-+
++  
 +  #include <linux/types.h>
 +  #include <linux/fb.h>
-+
++  
 +  // Geometry
 +  struct fbcondecor_geometry {
 +  	__u16 offset_x, offset_y; /* Top left corner  */
@@ -71,21 +71,45 @@ diff -ruN oldlinux/Documentation/fb/fbcondecor.rst newlinux/Documentation/fb/fbc
 +  	__u64 set_image;    /* Pointer to image, or NULL if turning off */
 +  };
 +  
-+  // Flag to send to the ioctl
-+  #define FBCONDECOR_FLAG_QUERY 0
-+  #define FBCONDECOR_FLAG_GET_GEOMETRY 1
-+  #define FBCONDECOR_FLAG_GET_IMAGE 2
-+  #define FBCONDECOR_FLAG_SET_GEOMETRY 4
-+  #define FBCONDECOR_FLAG_SET_IMAGE 8
-+  
-+  // The response from the ioctl, can also be treated as a flag
-+  #define FBCONDECOR_STATE_OFF 0
-+  #define FBCONDECOR_STATE_GEOMETRY 1
-+  #define FBCONDECOR_STATE_IMAGE 2
-+  #define FBCONDECOR_STATE_FULL 3
-+
 +  #define FBIO_CONDECOR _IOWR('F', 0x19, struct fbcondecor_command)
-+
++  
++  // Flag to send to the ioctl
++  #define FBCONDECOR_COMMAND_FLAG_QUERY 0
++  #define FBCONDECOR_COMMAND_FLAG_GET_GEOMETRY 1
++  #define FBCONDECOR_COMMAND_FLAG_GET_IMAGE 2
++  #define FBCONDECOR_COMMAND_FLAG_SET_GEOMETRY 4
++  #define FBCONDECOR_COMMAND_FLAG_SET_IMAGE 8
++  
++  // Flags for the response from the ioctl
++  #define FBCONDECOR_STATE_FLAG_GEOMETRY 1
++  #define FBCONDECOR_STATE_FLAG_IMAGE 2
++  #define FBCONDECOR_STATE_FLAG_VC_ROTATION_LOW 4 
++  #define FBCONDECOR_STATE_FLAG_VC_ROTATION_HIGH 8
++        
++  // Utilities for interfacing with the state flags
++  #define FBCONDECOR_STATE_HAS_GEOMETRY(state) (\
++        (state) & FBCONDECOR_STATE_FLAG_GEOMETRY\
++  )
++  
++  #define FBCONDECOR_STATE_HAS_IMAGE(state) (\
++        (state) & FBCONDECOR_STATE_FLAG_IMAGE\
++  )
++  
++  #define FBCONDECOR_STATE_HAS_SWAPPED_DIMENSIONS(state) (\
++        (state) & FBCONDECOR_STATE_FLAG_VC_ROTATION_LOW\
++  )
++  
++  #define FBCONDECOR_ROTATION_SHIFT 2
++  
++  #define FBCONDECOR_STATE_GET_ROTATION(state) (\
++        (\
++        	(state) & (\
++        		FBCONDECOR_STATE_FLAG_VC_ROTATION_LOW |\
++        		FBCONDECOR_STATE_FLAG_VC_ROTATION_HIGH\
++        	)\
++        ) >> FBCONDECOR_ROTATION_SHIFT\
++  )
++  
 +  #endif
 +
 +The FBIO_CONDECOR ioctl takes an ``fbcondecor_command`` and acts the following
@@ -101,31 +125,32 @@ diff -ruN oldlinux/Documentation/fb/fbcondecor.rst newlinux/Documentation/fb/fbc
 +6.  If the framebuffer dimensions would cause an overflow
 +    when multiplying ``4*width*height`` to calculate the image buffer size,
 +    ``-EINVAL`` is returned.
-+7.  If ``flag & FBCONDECOR_FLAG_GET_GEOMETRY``, but ``get_geometry`` is
++7.  If ``flag & FBCONDECOR_COMMAND_FLAG_GET_GEOMETRY``, but ``get_geometry`` is
 +    ``NULL``,
 +    ``-EINVAL`` is returned.
-+8.  If ``flag & FBCONDECOR_FLAG_GET_IMAGE``, but ``get_image`` is ``NULL``,
-+    ``-EINVAL`` is returned.
++8.  If ``flag & FBCONDECOR_COMMAND_FLAG_GET_IMAGE``, but ``get_image`` is
++    ``NULL``, ``-EINVAL`` is returned.
 +9.  The current state of the console decorations is saved; this is what will
-+    be returned in case of no errors; it is one of the macros prefixed with
-+    ``FBCONDECOR_STATE_`` above.
-+10. If ``flag & FBCONDECOR_FLAG_SET_GEOMETRY``, new memory is allocated if
-+    the provided geometry is not ``NULL``. If the copy from userspace fails,
++    be returned in case of no errors; it is a combination of the macros
++    prefixed with ``FBCONDECOR_STATE_FLAG_`` above. Note that this also
++    encodes the rotation of the virtual console.
++10. If ``flag & FBCONDECOR_COMMAND_FLAG_SET_GEOMETRY``, new memory is allocated
++    if the provided geometry is not ``NULL``. If the copy from userspace fails,
 +    ``-EFAULT`` is returned. If the geometry passed does not
 +    fit inside of the framebuffer, ``-EINVAL`` is returned.
-+11. If ``flag & FBCONDECOR_FLAG_SET_IMAGE``, new memory is allocated if
++11. If ``flag & FBCONDECOR_COMMAND_FLAG_SET_IMAGE``, new memory is allocated if
 +    the provided image is not ``NULL``. If the copy from userspace fails,
 +    ``-EFAULT`` is returned.
-+12. If ``flag & FBCONDECOR_FLAG_GET_GEOMETRY`` and the old geometry is not
-+    ``NULL``, the old geometry is copied to ``get_geometry``.
++12. If ``flag & FBCONDECOR_COMMAND_FLAG_GET_GEOMETRY`` and the old geometry is
++    not ``NULL``, the old geometry is copied to ``get_geometry``.
 +    If this fails, ``-EFAULT`` is returned.
-+13. If ``flag & FBCONDECOR_FLAG_GET_IMAGE`` and the old image is not
++13. If ``flag & FBCONDECOR_COMMAND_FLAG_GET_IMAGE`` and the old image is not
 +    ``NULL``, the old image is copied to ``get_image``.
 +    If this fails, ``-EFAULT`` is returned.
-+14. If ``flag & FBCONDECOR_FLAG_SET_GEOMETRY``, the geometry on the vc is
-+    set to the provided ``set_geometry`` (or removed if ``NULL`` was
++14. If ``flag & FBCONDECOR_COMMAND_FLAG_SET_GEOMETRY``, the geometry on the vc
++    is set to the provided ``set_geometry`` (or removed if ``NULL`` was
 +    provided). The console is also resized accordingly.
-+15. If ``flag & FBCONDECOR_FLAG_SET_IMAGE``, the image on the vc is
++15. If ``flag & FBCONDECOR_COMMAND_FLAG_SET_IMAGE``, the image on the vc is
 +    set to the provided ``set_image`` (or removed if ``NULL`` was
 +    provided).
 +16. If the targeted vc is the currently active one, the screen is redrawn.
@@ -183,7 +208,7 @@ diff -ruN oldlinux/drivers/Makefile newlinux/drivers/Makefile
  
 diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbdev/core/bitblit.c
 --- oldlinux/drivers/video/fbdev/core/bitblit.c	2026-04-30 11:13:05.000000000 +0200
-+++ newlinux/drivers/video/fbdev/core/bitblit.c	2026-05-11 01:01:06.603450669 +0200
++++ newlinux/drivers/video/fbdev/core/bitblit.c	2026-05-11 05:06:44.925774251 +0200
 @@ -18,6 +18,7 @@
  #include <linux/console.h>
  #include <asm/types.h>
@@ -290,27 +315,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbd
  	unsigned int cw = vc->vc_font.width;
  	unsigned int ch = vc->vc_font.height;
  	unsigned int rw = info->var.xres - (vc->vc_cols*cw);
-@@ -257,6 +314,19 @@
- 	}
- }
- 
-+// NyteLyte:
-+// Exposing this in the header instead of "bit_cursor" since that
-+// may be a bit more common of a name. I am doing it like this because
-+// even in the case of a rotated console, fbcondecor needs the original
-+// bit_cursor to be called instead of the ones specialized for rotated
-+// displays. It does its own coordinate transormations to account for the
-+// rotations, since that was easier to implement.
-+void fbcondecor_unrotated_bit_cursor(
-+	struct vc_data *vc, struct fb_info *info, bool enable, int fg, int bg
-+) {
-+	bit_cursor(vc, info, enable, fg, bg);
-+}
-+
- static void bit_cursor(struct vc_data *vc, struct fb_info *info, bool enable,
- 		       int fg, int bg)
- {
-@@ -388,11 +458,15 @@
+@@ -388,15 +445,32 @@
  	cursor.image.depth = 1;
  	cursor.rop = ROP_XOR;
  
@@ -330,9 +335,26 @@ diff -ruN oldlinux/drivers/video/fbdev/core/bitblit.c newlinux/drivers/video/fbd
  
  	par->cursor_reset = 0;
  }
+ 
++// NyteLyte:
++// Exposing this in the header instead of "bit_cursor" since that
++// may be a bit more common of a name. I am doing it like this because
++// even in the case of a rotated console, fbcondecor needs the original
++// bit_cursor to be called instead of the ones specialized for rotated
++// displays. It does its own coordinate transormations to account for the
++// rotations, since that was easier to implement.
++void fbcondecor_unrotated_bit_cursor(
++	struct vc_data *vc, struct fb_info *info, bool enable, int fg, int bg
++) {
++	bit_cursor(vc, info, enable, fg, bg);
++}
++
+ static int bit_update_start(struct fb_info *info)
+ {
+ 	struct fbcon_par *par = info->fbcon_par;
 diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video/fbdev/core/cfbcondecor.c
 --- oldlinux/drivers/video/fbdev/core/cfbcondecor.c	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/drivers/video/fbdev/core/cfbcondecor.c	2026-05-11 02:24:39.105880164 +0200
++++ newlinux/drivers/video/fbdev/core/cfbcondecor.c	2026-05-11 05:08:32.898916970 +0200
 @@ -0,0 +1,550 @@
 +/*
 + *  linux/drivers/video/fbdev/core/cfbcondecor.c -- Framebuffer decor render
@@ -733,8 +755,8 @@ diff -ruN oldlinux/drivers/video/fbdev/core/cfbcondecor.c newlinux/drivers/video
 +
 +	int offset_y = start_row*vc->vc_font.height + fbcondecor_offset_y(vc);
 +	int offset_x = (
-+		start_column*vc->vc_font.width + fbcondecor_offset_x(vc);
-+	)
++		start_column*vc->vc_font.width + fbcondecor_offset_x(vc)
++	);
 +
 +	int height = span_rows * vc->vc_font.height;
 +	int width = span_columns * vc->vc_font.width;
@@ -1387,8 +1409,8 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcon_cw.c newlinux/drivers/video/fb
  	unsigned short charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
 diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/fbdev/core/fbcondecor.c
 --- oldlinux/drivers/video/fbdev/core/fbcondecor.c	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/drivers/video/fbdev/core/fbcondecor.c	2026-05-11 02:21:56.666040418 +0200
-@@ -0,0 +1,336 @@
++++ newlinux/drivers/video/fbdev/core/fbcondecor.c	2026-05-11 05:07:36.428990634 +0200
+@@ -0,0 +1,350 @@
 +/*
 + *  linux/drivers/video/fbdev/core/fbcondecor.c -- Framebuffer console
 + *                                                 decorations
@@ -1466,7 +1488,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +
 +	if (
 +		command_flag &
-+		FBCONDECOR_FLAG_GET_GEOMETRY && !user_get_geometry
++		FBCONDECOR_COMMAND_FLAG_GET_GEOMETRY && !user_get_geometry
 +	) {
 +		printk(
 +			KERN_ERR
@@ -1475,7 +1497,10 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +		);
 +		return -EINVAL;
 +	} 
-+	if (command_flag & FBCONDECOR_FLAG_GET_IMAGE && !user_get_image) {
++	if (
++		command_flag & FBCONDECOR_COMMAND_FLAG_GET_IMAGE &&
++		!user_get_image
++	) {
 +		printk(
 +			KERN_ERR
 +			"fbcondecor: unable to copy "
@@ -1485,14 +1510,17 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +	}
 +	struct fbcondecor_geometry *old_geometry = vc->vc_fbcondecor_geometry;
 +	u8 *old_image = vc->vc_fbcondecor_image;
-+	u16 previous_state = old_geometry ? FBCONDECOR_STATE_GEOMETRY : 0;
-+	previous_state |= old_image ? FBCONDECOR_STATE_IMAGE : 0;
++	u16 previous_state = old_geometry ? FBCONDECOR_STATE_FLAG_GEOMETRY : 0;
++	previous_state |= old_image ? FBCONDECOR_STATE_FLAG_IMAGE : 0;
++	previous_state |= info->fbcon_par->rotate << FBCONDECOR_ROTATION_SHIFT;
 +
 +	struct fbcondecor_geometry *new_geometry = NULL;
 +	u8 *new_image = NULL;
-+
 +	
-+	if (command_flag & FBCONDECOR_FLAG_SET_GEOMETRY && user_set_geometry) {
++	if (
++		command_flag & FBCONDECOR_COMMAND_FLAG_SET_GEOMETRY &&
++		user_set_geometry
++	) {
 +		new_geometry = kmalloc(
 +			sizeof(struct fbcondecor_geometry),
 +			GFP_KERNEL
@@ -1539,7 +1567,10 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +		}
 +	}
 +
-+	if (command_flag & FBCONDECOR_FLAG_SET_IMAGE && user_set_image) {
++	if (
++		command_flag & FBCONDECOR_COMMAND_FLAG_SET_IMAGE &&
++		user_set_image
++	) {
 +		new_image = vmalloc(image_size);
 +		if (!new_image) {
 +			if (new_geometry) kfree(new_geometry);
@@ -1557,7 +1588,10 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +		}
 +	}
 +	
-+	if (old_geometry && command_flag & FBCONDECOR_FLAG_GET_GEOMETRY) {
++	if (
++		old_geometry &&
++		command_flag & FBCONDECOR_COMMAND_FLAG_GET_GEOMETRY
++	) {
 +		if (copy_to_user(
 +			user_get_geometry,
 +			old_geometry,
@@ -1574,7 +1608,10 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +		}
 +	}
 +
-+	if (old_image && command_flag & FBCONDECOR_FLAG_GET_IMAGE) {
++	if (
++		old_image &&
++		command_flag & FBCONDECOR_COMMAND_FLAG_GET_IMAGE
++	) {
 +		if(copy_to_user(user_get_image, old_image, image_size)) {
 +			printk(
 +				KERN_ERR
@@ -1588,7 +1625,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +	}
 +	
 +	bool redraw = false;
-+	if (command_flag & FBCONDECOR_FLAG_SET_GEOMETRY) {
++	if (command_flag & FBCONDECOR_COMMAND_FLAG_SET_GEOMETRY) {
 +		redraw = true;
 +		if (old_geometry) kfree(old_geometry);
 +		vc->vc_fbcondecor_geometry = new_geometry;
@@ -1611,7 +1648,7 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +		vc_resize(vc, cols, rows);
 +	}
 +
-+	if (command_flag & FBCONDECOR_FLAG_SET_IMAGE) {
++	if (command_flag & FBCONDECOR_COMMAND_FLAG_SET_IMAGE) {
 +		redraw = true;
 +		if (old_image) vfree(old_image);
 +		vc->vc_fbcondecor_image = new_image;
@@ -1627,7 +1664,6 @@ diff -ruN oldlinux/drivers/video/fbdev/core/fbcondecor.c newlinux/drivers/video/
 +		);
 +		fbcon_clear_margins(vc, 0);
 +	}
-+
 +
 +	return previous_state;
 +}
@@ -2033,8 +2069,8 @@ diff -ruN oldlinux/include/linux/console_struct.h newlinux/include/linux/console
  	unsigned int	vc_saved_cols;
 diff -ruN oldlinux/include/uapi/linux/fbcondecor.h newlinux/include/uapi/linux/fbcondecor.h
 --- oldlinux/include/uapi/linux/fbcondecor.h	1970-01-01 01:00:00.000000000 +0100
-+++ newlinux/include/uapi/linux/fbcondecor.h	2026-05-05 09:58:22.831857024 +0200
-@@ -0,0 +1,42 @@
++++ newlinux/include/uapi/linux/fbcondecor.h	2026-05-11 04:59:21.226218493 +0200
+@@ -0,0 +1,66 @@
 +#ifndef _UAPI_LINUX_FBCONDECOR_H
 +#define _UAPI_LINUX_FBCONDECOR_H
 +
@@ -2061,19 +2097,43 @@ diff -ruN oldlinux/include/uapi/linux/fbcondecor.h newlinux/include/uapi/linux/f
 +	__u64 set_image;    /* Pointer to image, or NULL if turning off */
 +};
 +
-+// Flag to send to the ioctl
-+#define FBCONDECOR_FLAG_QUERY 0
-+#define FBCONDECOR_FLAG_GET_GEOMETRY 1
-+#define FBCONDECOR_FLAG_GET_IMAGE 2
-+#define FBCONDECOR_FLAG_SET_GEOMETRY 4
-+#define FBCONDECOR_FLAG_SET_IMAGE 8
-+
-+// The response from the ioctl, can also be treated as a flag
-+#define FBCONDECOR_STATE_OFF 0
-+#define FBCONDECOR_STATE_GEOMETRY 1
-+#define FBCONDECOR_STATE_IMAGE 2
-+#define FBCONDECOR_STATE_FULL 3
-+
 +#define FBIO_CONDECOR _IOWR('F', 0x19, struct fbcondecor_command)
++
++// Flag to send to the ioctl
++#define FBCONDECOR_COMMAND_FLAG_QUERY 0
++#define FBCONDECOR_COMMAND_FLAG_GET_GEOMETRY 1
++#define FBCONDECOR_COMMAND_FLAG_GET_IMAGE 2
++#define FBCONDECOR_COMMAND_FLAG_SET_GEOMETRY 4
++#define FBCONDECOR_COMMAND_FLAG_SET_IMAGE 8
++
++// Flags for the response from the ioctl
++#define FBCONDECOR_STATE_FLAG_GEOMETRY 1
++#define FBCONDECOR_STATE_FLAG_IMAGE 2
++#define FBCONDECOR_STATE_FLAG_VC_ROTATION_LOW 4 
++#define FBCONDECOR_STATE_FLAG_VC_ROTATION_HIGH 8
++      
++// Utilities for interfacing with the state flags
++#define FBCONDECOR_STATE_HAS_GEOMETRY(state) (\
++      (state) & FBCONDECOR_STATE_FLAG_GEOMETRY\
++)
++
++#define FBCONDECOR_STATE_HAS_IMAGE(state) (\
++      (state) & FBCONDECOR_STATE_FLAG_IMAGE\
++)
++
++#define FBCONDECOR_STATE_HAS_SWAPPED_DIMENSIONS(state) (\
++      (state) & FBCONDECOR_STATE_FLAG_VC_ROTATION_LOW\
++)
++
++#define FBCONDECOR_ROTATION_SHIFT 2
++
++#define FBCONDECOR_STATE_GET_ROTATION(state) (\
++      (\
++      	(state) & (\
++      		FBCONDECOR_STATE_FLAG_VC_ROTATION_LOW |\
++      		FBCONDECOR_STATE_FLAG_VC_ROTATION_HIGH\
++      	)\
++      ) >> FBCONDECOR_ROTATION_SHIFT\
++)
 +
 +#endif
